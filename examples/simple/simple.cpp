@@ -1,24 +1,73 @@
+// =============================================================================
+// simple.cpp — Minimal llama.cpp inference example with full auto-detection
+//
+// Supports chat (instruct) models and base (text completion) models.
+// NO template flags needed — model type is fully auto-detected from GGUF.
+//
+// Usage:
+//   ./simple_llama_test -n 64  -m model.gguf "Your question"   (chat or base)
+//
+// Template auto-detection (fully automatic, no flags needed):
+//   1. Checks GGUF for tokenizer.chat_template key
+//      - Missing → base/pretrain model → raw text completion (no wrapping)
+//      - Present → instruct/chat model → continue to step 2
+//   2. Checks general.name for "danube"
+//      - Contains "danube" → h2o-danube3 → apply <|prompt|>...<|answer|>
+//      - Otherwise → library applies the correct template from GGUF
+//
+// =============================================================================
+
 #include "llama.h"
 #include <cstdio>
 #include <cstring>
 #include <string>
 #include <vector>
 
+#include "xtensa_hifi.h"
+
+#if defined(HIFI5S_OPT)
+#include <xtensa/tie/xt_hifi2.h>
+#include <sys/times.h>
+#include <xtensa/hal.h>
+#include <xtensa/sim.h>
+#endif
+#define TOKENS_DECODE 16
+
+#if defined(HIFI5S_OPT)
+struct  tms full_timestart[TOKENS_DECODE], full_timestop[TOKENS_DECODE];
+#endif
+
 static void print_usage(int, char ** argv) {
     printf("\nexample usage:\n");
     printf("\n    %s -m model.gguf [-n n_predict] [-ngl n_gpu_layers] [prompt]\n", argv[0]);
+	printf("\nExamples:\n");
+    printf("  # Chat model (SmolLM2-Instruct, Qwen2.5, TinyLlama, granite, etc.)\n");
+    printf("  %s -n 64 -m model.gguf \"What is the capital of France?\"\n", argv[0]);
+    printf("\n  # Base model (SmolLM2-360M, pythia, gpt2) — same command, auto-detected\n");
+    printf("  %s -n 120 -m model.gguf \"The history of the internet began\"\n", argv[0]);
     printf("\n");
 }
 
 int main(int argc, char ** argv) {
+#ifdef BARE_METAL_TEST
+    printf("**** simple main start ****\n"); fflush(stdout);
+#endif
     // path to the model gguf file
     std::string model_path;
     // prompt to generate text from
-    std::string prompt = "Hello my name is";
+    //std::string prompt = "Hello my name is";
+    std::string prompt;
+    bool prompt_set = false;
     // number of layers to offload to the GPU
+
+#ifndef BARE_METAL_TEST
     int ngl = 99;
     // number of tokens to predict
     int n_predict = 32;
+#else
+    int ngl = 1;
+    int n_predict = TOKENS_DECODE;
+#endif
 
     // parse command line arguments
 
@@ -71,6 +120,7 @@ int main(int argc, char ** argv) {
                 prompt += " ";
                 prompt += argv[i];
             }
+			prompt_set = true;
         }
     }
 
@@ -88,6 +138,53 @@ int main(int argc, char ** argv) {
     if (model == NULL) {
         fprintf(stderr , "%s: error: unable to load model\n" , __func__);
         return 1;
+    }
+
+    // ── Apply chat template (fully automatic — no flags needed) ──────────────
+    // Step 1: check if GGUF has tokenizer.chat_template
+    //   - Missing → base/pretrain model → raw text completion (no wrapping)
+    //   - Present → chat/instruct model → step 2
+    // Step 2: library applies the template from GGUF
+    //   - Success (>=0) → use formatted prompt
+    //   - Failure  (<0) → GGUF template not in library's list → chatml fallback
+    {
+        char tmpl_check[8];
+        int has_tmpl = llama_model_meta_val_str(model, "tokenizer.chat_template",
+                                                tmpl_check, sizeof(tmpl_check));
+
+		if(!prompt_set)
+		{
+			if (has_tmpl < 0) {
+				prompt = "Once upon a time";                   // base model default
+			} else {
+				prompt = "What is the capital of France?";     // chat model default
+			}
+			fprintf(stderr, "info: no prompt — using default for %s model: \"%s\"\n",
+					has_tmpl < 0 ? "base" : "chat", prompt.c_str());
+			prompt_set = true;
+		}
+        const std::string user_content = prompt;
+		{
+			if (has_tmpl < 0) {
+				// No chat template in GGUF → base/pretrain model → raw text completion
+				fprintf(stderr, "info: no chat template in GGUF — base model, raw completion\n");
+				prompt = user_content;
+			} else {
+				// Chat model — let the library apply the template from GGUF
+				llama_chat_message chat_msgs[1];
+				chat_msgs[0] = {"user", user_content.c_str()};
+				int buf_size = llama_chat_apply_template(model, NULL, chat_msgs, 1, true, NULL, 0);
+				if (buf_size < 0) {
+					// Library can't parse this model's template → chatml fallback
+					fprintf(stderr, "info: GGUF template unsupported by library — using chatml fallback\n");
+					prompt = "<|im_start|>user\n" + user_content + "<|im_end|>\n<|im_start|>assistant\n";
+				} else {
+					std::vector<char> buf(buf_size + 1);
+					llama_chat_apply_template(model, NULL, chat_msgs, 1, true, buf.data(), buf.size());
+					prompt = std::string(buf.data(), buf_size);
+				}
+			}
+		}
     }
 
     // tokenize the prompt
@@ -150,12 +247,21 @@ int main(int argc, char ** argv) {
     int n_decode = 0;
     llama_token new_token_id;
 
+#if defined(HIFI5S_OPT)
+    xt_iss_client_command("all", "enable");
+#endif
     for (int n_pos = 0; n_pos + batch.n_tokens < n_prompt + n_predict; ) {
+#if defined(HIFI5S_OPT)
+        times(&full_timestart[n_decode]);
+#endif
         // evaluate the current batch with the transformer model
         if (llama_decode(ctx, batch)) {
             fprintf(stderr, "%s : failed to eval, return code %d\n", __func__, 1);
             return 1;
         }
+#if defined(HIFI5S_OPT)
+        times(&full_timestop[n_decode]);
+#endif
 
         n_pos += batch.n_tokens;
 
@@ -185,21 +291,71 @@ int main(int argc, char ** argv) {
         }
     }
 
-    printf("\n");
+#if defined(HIFI5S_OPT)
+    xt_iss_client_command("all", "disable");
+#endif
 
     const auto t_main_end = ggml_time_us();
+    
+    fflush(stdout);
+    printf("\n**** decode is completed ****\n");
+    fflush(stdout);
 
-    fprintf(stderr, "%s: decoded %d tokens in %.2f s, speed: %.2f t/s\n",
+#if !defined (HIFI5S_OPT)
+    fprintf(stderr, "\n%s: decoded %d tokens in %.2f s, speed: %.2f t/s\n",
             __func__, n_decode, (t_main_end - t_main_start) / 1000000.0f, n_decode / ((t_main_end - t_main_start) / 1000000.0f));
 
     fprintf(stderr, "\n");
     llama_perf_sampler_print(smpl);
     llama_perf_context_print(ctx);
     fprintf(stderr, "\n");
+#else
+    unsigned long long avg_cycles, max_cycles=0, total_cycles=0;
+    unsigned int max_frame=0;
+    unsigned long full_cycles;   // unsigned long avoids signed 32-bit clock_t overflow
+    unsigned int cnt;
+    for(cnt=1; cnt<n_decode; cnt++)
+    {
+        full_cycles = (unsigned long)full_timestop[cnt].tms_utime - (unsigned long)full_timestart[cnt].tms_utime;
+        if(max_cycles < full_cycles)
+        { max_cycles = full_cycles; max_frame = cnt; }
 
+        total_cycles += (unsigned long long)full_cycles;
+    }
+    // Guard against divide-by-zero when only 1 or fewer tokens were decoded
+    avg_cycles = (n_decode > 1) ? total_cycles/(n_decode-1) : 0;
+
+    fprintf(stdout, "\n%s: decoded %d tokens\n", __func__, n_decode);
+    printf("\n");
+    long long int prefill_cycles = (long long int) ((unsigned long)full_timestop[0].tms_utime - (unsigned long)full_timestart[0].tms_utime);
+    printf("============================================================\n");
+    printf("                DETAILED CYCLES REPORT\n");
+    printf("============================================================\n");
+    fprintf(stdout, "cycles to first output token                   : %10lld\n", prefill_cycles);
+    fprintf(stdout, "(aka prefill cycles: includes prompt processing for %d prompt tokens)\n", n_prompt);
+    fprintf(stdout, "cycles to decode subsequent %d output tokens   : %10llu\n", n_decode-1, total_cycles);
+    fprintf(stdout, "prefill cycles/token                           : %10lld\n", prefill_cycles/n_prompt);
+    fprintf(stdout, "avg decode cycles/token                        : %10llu\n", avg_cycles);
+
+    printf("\n");
+    printf("============================================================\n");
+    printf("                PERFORMANCE SUMMARY\n");
+    printf("============================================================\n");
+    fprintf(stdout, "TTFT @1 GHz DSP                : %.4f sec (for decoding %d prompt tokens)\n", (float)(prefill_cycles)/(float)(1e9), n_prompt);
+    fprintf(stdout, "(TTFT => Time To First Token)\n");
+    fprintf(stdout, "decode tokens/sec @ 1GHz DSP   : %.2f\n", (float)(1e9)/(float)avg_cycles);
+
+    fprintf(stdout, "\n%d threads used\n", GGML_DEFAULT_N_THREADS);
+#endif
+
+#ifndef BARE_METAL_TEST
     llama_sampler_free(smpl);
     llama_free(ctx);
     llama_free_model(model);
+#endif
 
+#ifdef BARE_METAL_TEST
+    printf("**** simple main end ****\n"); fflush(stdout);
+#endif
     return 0;
 }

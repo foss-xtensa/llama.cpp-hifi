@@ -379,6 +379,28 @@ void ggml_aligned_free(void * ptr, size_t size);
         return r;
     }
 
+#elif XCHAL_HAVE_HIFI5S
+
+    #define GGML_COMPUTE_FP16_TO_FP32(x) ggml_compute_fp16_to_fp32(x)
+    #define GGML_COMPUTE_FP32_TO_FP16(x) ggml_compute_fp32_to_fp16(x)
+    
+    #define GGML_FP16_TO_FP32(x) GGML_COMPUTE_FP16_TO_FP32(x)
+    #define GGML_FP32_TO_FP16(x) GGML_COMPUTE_FP32_TO_FP16(x)
+    
+    // HiFi5 native FP16 conversion intrinsics
+    static inline float ggml_compute_fp16_to_fp32(ggml_fp16_t h) {
+        xthalf xh;
+        memcpy(&xh, &h, sizeof(ggml_fp16_t));
+        return xthalf_rtor_xtfloat(xh);
+    }
+    
+    static inline ggml_fp16_t ggml_compute_fp32_to_fp16(float f) {
+        ggml_fp16_t res;
+        xthalf xh = xtfloat_rtor_xthalf((xtfloat)f);
+        memcpy(&res, &xh, sizeof(ggml_fp16_t));
+        return res;
+    }
+
 #else
 
     // FP16 <-> FP32

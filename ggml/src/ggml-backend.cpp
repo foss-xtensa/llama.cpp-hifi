@@ -21,6 +21,9 @@
 #include <string.h>
 #include <string>
 #include <vector>
+#ifdef BARE_METAL_TEST
+#include <algorithm>
+#endif
 
 #ifdef __APPLE__
 #include <sys/types.h>

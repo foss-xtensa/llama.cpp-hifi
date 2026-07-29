@@ -25,7 +25,9 @@
 #pragma warning(disable: 4244 4267)
 #endif
 
+#ifndef UNUSED
 #define UNUSED GGML_UNUSED
+#endif
 
 // reference implementation for deterministic creation of model files
 void quantize_row_q4_0_ref(const float * restrict x, block_q4_0 * restrict y, int64_t k) {

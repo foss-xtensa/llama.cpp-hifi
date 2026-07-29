@@ -225,11 +225,19 @@
 #   define GGML_MAX_NAME        64
 #endif
 
+#ifndef BARE_METAL_TEST
 #define GGML_DEFAULT_N_THREADS  4
+#else
+#define GGML_DEFAULT_N_THREADS  1
+#endif
 #define GGML_DEFAULT_GRAPH_SIZE 2048
 
+#ifndef OPT_ISSUE_CHANGES
 #if UINTPTR_MAX == 0xFFFFFFFF
     #define GGML_MEM_ALIGN 4
+#else
+    #define GGML_MEM_ALIGN 16
+#endif
 #else
     #define GGML_MEM_ALIGN 16
 #endif
@@ -615,7 +623,11 @@ extern "C" {
 
         void * extra; // extra things e.g. for ggml-cuda.cu
 
+#ifndef OPT_ISSUE_CHANGES
         char padding[8];
+#else
+        char padding[GGML_MEM_ALIGN];
+#endif
     };
 
     static const size_t GGML_TENSOR_SIZE = sizeof(struct ggml_tensor);

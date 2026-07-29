@@ -50,7 +50,9 @@
 #include <windows.h>
 #endif
 
+#ifndef UNUSED
 #define UNUSED GGML_UNUSED
+#endif
 
 #if defined(_MSC_VER)
 #define m512bh(p) p
@@ -235,6 +237,7 @@ void ggml_log_callback_default(enum ggml_log_level level, const char * text, voi
 #endif
 
 
+#ifndef BARE_METAL_TEST
 void * ggml_aligned_malloc(size_t size) {
     const int alignment = 64;
 
@@ -267,7 +270,17 @@ void * ggml_aligned_malloc(size_t size) {
             break;
     }
   #else
+#ifndef BARE_METAL_TEST
     int result = posix_memalign(&aligned_memory, alignment, size);
+#else
+    int result = 0;
+    void *aligned_memory_test = malloc(size+128);
+    if(!aligned_memory_test)
+    	result = 1;
+    aligned_memory = (void*)(((int)aligned_memory_test+(128-1)) & (~(128-1)));
+    if(!aligned_memory)
+	    result = 1;
+#endif
   #endif
     if (result != 0) {
         // Handle allocation failure
@@ -286,7 +299,36 @@ void * ggml_aligned_malloc(size_t size) {
     return aligned_memory;
 #endif
 }
+#else
+void * ggml_aligned_malloc(size_t size) {
+    const int alignment = 64;
+    uintptr_t raw;
+    uintptr_t aligned;
 
+    if (size == 0) {
+        GGML_LOG_WARN("Behavior may be unexpected when allocating 0 bytes for ggml_aligned_malloc!\n");
+        return NULL;
+    }
+
+    // allocate extra space for alignment + header
+    raw = (uintptr_t)malloc(size + alignment + sizeof(uintptr_t));
+    if (!raw)
+    {
+        const char *error_desc = "allocation error";    
+        GGML_LOG_ERROR("%s: %s (attempted to allocate %6.2f MB)\n", __func__, error_desc, size/(1024.0*1024.0));
+        return NULL;
+    }
+    // align pointer after header
+    aligned = (raw + sizeof(uintptr_t) + (alignment - 1)) & ~(alignment - 1);
+
+    // store original pointer just before aligned block
+    ((uintptr_t *)aligned)[-1] = raw;
+//printf("***DYNAMIC_ALLOC %d %s\n", size, __func__);
+    return (void *)aligned;
+}
+#endif
+
+#ifndef BARE_METAL_TEST
 void ggml_aligned_free(void * ptr, size_t size) {
     GGML_UNUSED(size);
 #if defined(_MSC_VER) || defined(__MINGW32__)
@@ -303,7 +345,18 @@ void ggml_aligned_free(void * ptr, size_t size) {
     free(ptr);
 #endif
 }
+#else
+void ggml_aligned_free(void *ptr, size_t size)
+{
+    GGML_UNUSED(size);
+    
+    if (!ptr) return;
 
+    uintptr_t raw = ((uintptr_t *)ptr)[-1];
+    free((void *)raw);
+//printf("***DYNAMIC_FREE %d %s\n", size, __func__);
+}
+#endif
 
 inline static void * ggml_malloc(size_t size) {
     if (size == 0) {
@@ -315,6 +368,7 @@ inline static void * ggml_malloc(size_t size) {
         GGML_LOG_ERROR("%s: failed to allocate %6.2f MB\n", __func__, size/(1024.0*1024.0));
         GGML_ABORT("fatal error");
     }
+//printf("***DYNAMIC_ALLOC %d %s\n", size, __func__);
     return result;
 }
 
@@ -329,13 +383,14 @@ inline static void * ggml_calloc(size_t num, size_t size) {
         GGML_LOG_ERROR("%s: failed to allocate %6.2f MB\n", __func__, size/(1024.0*1024.0));
         GGML_ABORT("fatal error");
     }
+//printf("***DYNAMIC_ALLOC %d %s\n", size, __func__);
     return result;
 }
 
 #define GGML_MALLOC(size)      ggml_malloc(size)
 #define GGML_CALLOC(num, size) ggml_calloc(num, size)
 
-#define GGML_FREE(ptr) free(ptr)
+#define GGML_FREE(ptr) {free(ptr); /*printf("***GGML_FREE %s\n", __func__); */}
 
 const char * ggml_status_to_string(enum ggml_status status) {
     switch (status) {
@@ -484,6 +539,7 @@ int64_t ggml_time_us(void) {
     return ((t.QuadPart-timer_start) * 1000000) / timer_freq;
 }
 #else
+#ifndef BARE_METAL_TEST
 void ggml_time_init(void) {}
 int64_t ggml_time_ms(void) {
     struct timespec ts;
@@ -496,6 +552,11 @@ int64_t ggml_time_us(void) {
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (int64_t)ts.tv_sec*1000000 + (int64_t)ts.tv_nsec/1000;
 }
+#else
+void ggml_time_init(void) {}
+int64_t ggml_time_ms(void) { return 0ll; }
+int64_t ggml_time_us(void) { return 0ll; }
+#endif
 #endif
 
 int64_t ggml_cycles(void) {
@@ -862,7 +923,11 @@ struct ggml_object {
 
     enum ggml_object_type type;
 
+#ifndef OPT_ISSUE_CHANGES
     char padding[4];
+#else
+    char padding[GGML_MEM_ALIGN];
+#endif
 };
 
 static const size_t GGML_OBJECT_SIZE = sizeof(struct ggml_object);
@@ -3203,7 +3268,6 @@ struct ggml_tensor * ggml_view_4d(
 }
 
 // ggml_permute
-
 struct ggml_tensor * ggml_permute(
         struct ggml_context * ctx,
         struct ggml_tensor  * a,
@@ -3258,8 +3322,6 @@ struct ggml_tensor * ggml_permute(
     return result;
 }
 
-// ggml_transpose
-
 struct ggml_tensor * ggml_transpose(
         struct ggml_context * ctx,
         struct ggml_tensor  * a) {
@@ -3279,7 +3341,6 @@ struct ggml_tensor * ggml_transpose(
 }
 
 // ggml_get_rows
-
 struct ggml_tensor * ggml_get_rows(
         struct ggml_context * ctx,
         struct ggml_tensor  * a,

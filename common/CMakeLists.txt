@@ -1,6 +1,9 @@
 # common
 
-find_package(Threads REQUIRED)
+# Bare-metal Xtensa has no pthreads — skip Threads search
+if (NOT CMAKE_SYSTEM_NAME STREQUAL "Generic")
+    find_package(Threads REQUIRED)
+endif()
 
 llama_add_compile_flags()
 
@@ -89,4 +92,4 @@ endif ()
 
 target_include_directories(${TARGET} PUBLIC .)
 target_compile_features   (${TARGET} PUBLIC cxx_std_17)
-target_link_libraries     (${TARGET} PRIVATE ${LLAMA_COMMON_EXTRA_LIBS} PUBLIC llama Threads::Threads)
+target_link_libraries     (${TARGET} PRIVATE ${LLAMA_COMMON_EXTRA_LIBS} PUBLIC llama $<$<NOT:$<STREQUAL:${CMAKE_SYSTEM_NAME},Generic>>:Threads::Threads>)

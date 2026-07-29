@@ -319,7 +319,7 @@ foreach (target ggml-base ggml)
     target_compile_features   (${target} PRIVATE c_std_11 cxx_std_17) # don't bump
 endforeach()
 
-target_link_libraries(ggml-base PRIVATE Threads::Threads)
+target_link_libraries(ggml-base PRIVATE $<$<NOT:$<STREQUAL:${CMAKE_SYSTEM_NAME},Generic>>:Threads::Threads>)
 
 find_library(MATH_LIBRARY m)
 if (MATH_LIBRARY)

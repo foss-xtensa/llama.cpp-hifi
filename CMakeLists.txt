@@ -78,6 +78,15 @@ option(LLAMA_BUILD_SERVER   "llama: build server example" ${LLAMA_STANDALONE})
 # 3rd party libs
 option(LLAMA_CURL "llama: use libcurl to download model from an URL" OFF)
 
+# Xtensa HiFi5s bare-metal port
+option(BARE_METAL_TEST "Build for bare-metal Xtensa — disables OS-dependent code" OFF)
+if (BARE_METAL_TEST)
+    add_compile_definitions(BARE_METAL_TEST)
+    add_compile_definitions(GGML_USE_CPU)
+    # include/xtensa_hifi.h path — required by ggml-cpu.c and simple.cpp
+    include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
+endif()
+
 # Required for relocatable CMake package
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/build-info.cmake)
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/common.cmake)

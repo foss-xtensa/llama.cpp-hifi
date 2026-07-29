@@ -25,6 +25,7 @@ add_library(llama
             )
 
 target_include_directories(llama PUBLIC . ../include)
+target_include_directories(llama PRIVATE ../ggml/src)  # for ggml-impl.h
 target_compile_features   (llama PUBLIC cxx_std_17) # don't bump
 
 target_link_libraries(llama PUBLIC ggml)

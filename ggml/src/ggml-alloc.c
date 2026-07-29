@@ -375,6 +375,9 @@ struct ggml_gallocr {
 ggml_gallocr_t ggml_gallocr_new_n(ggml_backend_buffer_type_t * bufts, int n_bufs) {
     ggml_gallocr_t galloc = (ggml_gallocr_t)calloc(1, sizeof(struct ggml_gallocr));
     GGML_ASSERT(galloc != NULL);
+//printf("***DYNAMIC_ALLOC %d %s\n", sizeof(ggml_backend_buffer_type_t), __func__);
+//printf("***DYNAMIC_ALLOC %d %s\n", sizeof(ggml_backend_buffer_t), __func__);
+//printf("***DYNAMIC_ALLOC %d %s\n", sizeof(struct ggml_dyn_tallocr *), __func__);
 
     galloc->bufts = calloc(n_bufs, sizeof(ggml_backend_buffer_type_t));
     GGML_ASSERT(galloc->bufts != NULL);

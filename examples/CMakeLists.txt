@@ -1,6 +1,8 @@
 # dependencies
 
-find_package(Threads REQUIRED)
+if (NOT CMAKE_SYSTEM_NAME STREQUAL "Generic")
+    find_package(Threads REQUIRED)
+endif()
 
 # third-party
 

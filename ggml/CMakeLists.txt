@@ -188,7 +188,10 @@ set(CMAKE_CXX_STANDARD_REQUIRED true)
 
 set(THREADS_PREFER_PTHREAD_FLAG ON)
 
-find_package(Threads REQUIRED)
+# Bare-metal Xtensa: no pthreads — skip the Threads search entirely
+if (NOT CMAKE_SYSTEM_NAME STREQUAL "Generic")
+    find_package(Threads REQUIRED)
+endif()
 
 #
 # build the library

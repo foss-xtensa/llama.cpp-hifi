@@ -1,0 +1,96 @@
+# Makefile for GGML/Llama.cpp - Xtensa HiFi5 DSP
+# Adjust paths for your Linux environment
+
+# Toolchain paths
+# export XTENSA_CORE=<your_core_name>
+# export XTENSA_TOOLCHAIN=/path/to/XtDevTools/install/tools
+# export TOOLCHAIN_VER=RJ-2025.5-linux
+# export XTENSA_SYSTEM=$XTENSA_TOOLCHAIN/$TOOLCHAIN_VER/XtensaTools/config
+# export PATH=$XTENSA_TOOLCHAIN/$TOOLCHAIN_VER/XtensaTools/bin:$PATH
+
+#CC  = $(XTENSA_ROOT)/bin/xt-clang
+#CXX = $(XTENSA_ROOT)/bin/xt-clang++
+CC  = xt-clang
+CXX = xt-clang++
+
+# Xtensa flags
+XT_FLAGS = --xtensa-system=$(XTENSA_SYSTEM) --xtensa-core=$(XTENSA_CORE)
+
+# Compiler flags
+CFLAGS = -c -g -O3 -LNO:simd -mcoproc -std=c11 -save-temps=obj -stdlib=libc++ \
+         -mtext-section-literals -mlongcalls -ffunction-sections -Werror \
+         -DGGML_USE_CPU -DNDEBUG -DOPT_ISSUE_CHANGES\
+         -DBARE_METAL_TEST -DM_PI=3.14159265358979323846 $(XT_FLAGS)
+
+CXXFLAGS = -c -g -O3 -LNO:simd -mcoproc -std=c++17 -save-temps=obj -stdlib=libc++ \
+           -mtext-section-literals -mlongcalls -ffunction-sections -Werror \
+           -DGGML_USE_CPU -DNDEBUG -DOPT_ISSUE_CHANGES\
+           -DBARE_METAL_TEST -DM_PI=3.14159265358979323846 $(XT_FLAGS)
+
+# Include paths
+INCLUDES = -I. -Iggml/include -Iggml/src -Iggml/src/ggml-cpu -Iinclude -Isrc
+
+# Linker flags
+LDFLAGS = -mlsp=sim -std=c++17 -stdlib=libc++ $(XT_FLAGS)
+
+# Output
+BUILD_DIR = bin
+TARGET = $(BUILD_DIR)/xa_simple_llama_test
+
+# Source files
+C_SRCS = ggml/src/ggml.c \
+         ggml/src/ggml-alloc.c \
+         ggml/src/ggml-quants.c \
+         ggml/src/ggml-cpu/ggml-cpu.c \
+         ggml/src/ggml-cpu/ggml-cpu-quants.c
+
+CXX_SRCS = ggml/src/ggml-threading.cpp \
+           ggml/src/ggml-backend.cpp \
+           ggml/src/ggml-backend-reg.cpp \
+           ggml/src/ggml-cpu/ggml-cpu_cpp.cpp \
+           src/llama.cpp \
+           src/llama-vocab.cpp \
+           src/llama-grammar.cpp \
+           src/llama-sampling.cpp \
+           src/unicode.cpp \
+           src/unicode-data.cpp \
+           examples/simple/simple.cpp
+
+# Object files
+C_OBJS   = $(C_SRCS:%.c=$(BUILD_DIR)/%.o)
+CXX_OBJS = $(CXX_SRCS:%.cpp=$(BUILD_DIR)/%.o)
+OBJS     = $(C_OBJS) $(CXX_OBJS)
+
+# Special flags for simple.cpp only (different optimization, no -DOPT_ISSUE_CHANGES)
+SIMPLE_OPT ?= -O2 -Os -fno-strict-aliasing -fno-vectorize
+SIMPLE_CXXFLAGS = -c -g $(SIMPLE_OPT) -mcoproc -std=c++17 -save-temps=obj -stdlib=libc++ \
+                  -mtext-section-literals -mlongcalls -ffunction-sections -Werror \
+                  -DGGML_USE_CPU -DNDEBUG \
+                  -DBARE_METAL_TEST -DM_PI=3.14159265358979323846 \
+                  $(XT_FLAGS)
+
+# Targets
+all: $(TARGET)
+	@echo "Build successful!"
+
+$(TARGET): $(OBJS)
+	@mkdir -p $(dir $@)
+	$(CXX) $(OBJS) -o $@ $(LDFLAGS)
+
+$(BUILD_DIR)/%.o: %.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) $(INCLUDES) $< -o $@
+
+# Special rule for simple.cpp
+$(BUILD_DIR)/examples/simple/simple.o: examples/simple/simple.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(SIMPLE_CXXFLAGS) $(INCLUDES) $< -o $@
+
+$(BUILD_DIR)/%.o: %.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) $< -o $@
+
+clean:
+	rm -rf $(BUILD_DIR)
+
+.PHONY: all clean

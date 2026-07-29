@@ -4,9 +4,6 @@
 #include "ggml-cpu-aarch64.h"
 #include "ggml-cpu-traits.h"
 #include "ggml-impl.h"
-#ifndef BARE_METAL_TEST
-#include "amx/amx.h"
-#endif
 
 #include <cctype>
 #include <string>

@@ -21,8 +21,10 @@
 #    include <mach-o/dyld.h>
 #    include <dlfcn.h>
 #else
+#ifndef BARE_METAL_TEST
 #    include <dlfcn.h>
 #    include <unistd.h>
+#endif
 #endif
 
 // Backend registry
@@ -106,18 +108,28 @@ using dl_handle = void;
 
 struct dl_handle_deleter {
     void operator()(void * handle) {
+#ifndef BARE_METAL_TEST
         dlclose(handle);
+#endif
     }
 };
 
 static void * dl_load_library(const std::string & path) {
+#ifndef BARE_METAL_TEST
     dl_handle * handle = dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL);
 
     return handle;
+#else
+    return nullptr;
+#endif
 }
 
 static void * dl_get_sym(dl_handle * handle, const char * name) {
+#ifndef BARE_METAL_TEST
     return dlsym(handle, name);
+#else
+    return nullptr;
+#endif
 }
 
 #endif
@@ -376,6 +388,7 @@ void ggml_backend_unload(ggml_backend_reg_t reg) {
     get_reg().unload_backend(reg, true);
 }
 
+#ifndef BARE_METAL_TEST
 static std::string get_executable_path() {
 #if defined(__APPLE__)
     // get executable path
@@ -432,6 +445,7 @@ static std::string get_executable_path() {
     return base_path + "\\";
 #endif
 }
+#endif
 
 static std::string backend_filename_prefix() {
 #ifdef _WIN32
@@ -449,6 +463,7 @@ static std::string backend_filename_suffix() {
 #endif
 }
 
+#ifndef BARE_METAL_TEST
 static ggml_backend_reg_t ggml_backend_load_best(const char * name, bool silent) {
     // enumerate all the files that match [lib]ggml-name-*.[so|dll] in the search paths
      // TODO: search system paths
@@ -507,6 +522,7 @@ static ggml_backend_reg_t ggml_backend_load_best(const char * name, bool silent)
 
     return get_reg().load_backend(best_path.c_str(), silent);
 }
+#endif
 
 void ggml_backend_load_all() {
 #ifdef NDEBUG
@@ -515,6 +531,7 @@ void ggml_backend_load_all() {
     bool silent = false;
 #endif
 
+#ifndef BARE_METAL_TEST
     ggml_backend_load_best("blas", silent);
     ggml_backend_load_best("cann", silent);
     ggml_backend_load_best("cuda", silent);
@@ -526,4 +543,5 @@ void ggml_backend_load_all() {
     ggml_backend_load_best("vulkan", silent);
     ggml_backend_load_best("musa", silent);
     ggml_backend_load_best("cpu", silent);
+#endif
 }

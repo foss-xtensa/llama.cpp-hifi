@@ -25,6 +25,28 @@ function(ggml_add_cpu_backend_variant_impl tag_name)
         ggml-cpu/ggml-cpu-impl.h
         )
 
+    # Xtensa HiFi5s bare-metal: replace upstream ggml-cpu.cpp with the HiFi5s-
+    # compatible ggml-cpu_cpp.cpp which works with the modified ggml-cpu.c.
+    # The upstream ggml-cpu.cpp calls ggml_cpu_init/ggml_graph_plan etc. which
+    # have different signatures in the HiFi5s ggml-cpu.c.
+    # Also remove x86/aarch64/hbm files that don't compile on Xtensa.
+    if (BARE_METAL_TEST)
+        list(REMOVE_ITEM GGML_CPU_SOURCES
+            ggml-cpu/ggml-cpu.cpp
+            ggml-cpu/ggml-cpu-aarch64.cpp
+            ggml-cpu/ggml-cpu-aarch64.h
+            ggml-cpu/ggml-cpu-hbm.cpp
+            ggml-cpu/ggml-cpu-hbm.h
+            ggml-cpu/amx/amx.cpp
+            ggml-cpu/amx/amx.h
+            ggml-cpu/amx/mmq.cpp
+            ggml-cpu/amx/mmq.h
+        )
+        list(APPEND GGML_CPU_SOURCES
+            ggml-cpu/ggml-cpu_cpp.cpp   # HiFi5s-compatible C++ backend (no amx, compatible API)
+        )
+    endif()
+
     target_compile_features(${GGML_CPU_NAME} PRIVATE c_std_11 cxx_std_17)
     target_include_directories(${GGML_CPU_NAME} PRIVATE . ggml-cpu)
 
@@ -54,7 +76,7 @@ function(ggml_add_cpu_backend_variant_impl tag_name)
         endif()
     endif()
 
-    if (GGML_LLAMAFILE)
+    if (GGML_LLAMAFILE AND NOT BARE_METAL_TEST)
         target_compile_definitions(${GGML_CPU_NAME} PRIVATE GGML_USE_LLAMAFILE)
 
         list(APPEND GGML_CPU_SOURCES

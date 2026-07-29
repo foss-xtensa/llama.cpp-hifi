@@ -8,6 +8,7 @@
 #include "ggml-alloc.h"
 #include "ggml-backend.h"
 #include "ggml-cpp.h"
+#include "ggml-impl.h"
 
 // TODO: replace with ggml API call
 #define QK_K 256
@@ -16,8 +17,10 @@
     #if __has_include(<unistd.h>)
         #include <unistd.h>
         #if defined(_POSIX_MAPPED_FILES)
+#ifndef BARE_METAL_TEST
             #include <sys/mman.h>
             #include <fcntl.h>
+#endif
         #endif
         #if defined(_POSIX_MEMLOCK_RANGE)
             #include <sys/resource.h>
@@ -71,6 +74,10 @@
 #include <thread>
 #include <type_traits>
 #include <unordered_map>
+
+#ifdef BARE_METAL_TEST
+#define PATH_MAX 64
+#endif
 
 #if defined(_MSC_VER)
 #pragma warning(disable: 4244 4267) // possible loss of data
@@ -1988,7 +1995,7 @@ struct llama_mmap {
 
     llama_mmap(const llama_mmap &) = delete;
 
-#ifdef _POSIX_MAPPED_FILES
+#if 1//def _POSIX_MAPPED_FILES
     static constexpr bool SUPPORTED = true;
 
     // list of mapped fragments (first_offset, last_offset)
@@ -1997,22 +2004,27 @@ struct llama_mmap {
     llama_mmap(struct llama_file * file, size_t prefetch = (size_t) -1 /* -1 = max value */, bool numa = false) {
         size = file->size;
         int fd = fileno(file->fp);
+#ifndef BARE_METAL_TEST
         int flags = MAP_SHARED;
         // prefetch/readahead impairs performance on NUMA systems
-        if (numa)  { prefetch = 0; }
-#ifdef __linux__
-        // advise the kernel to read the file sequentially (increases readahead)
-        if (posix_fadvise(fd, 0, 0, POSIX_FADV_SEQUENTIAL)) {
-            LLAMA_LOG_WARN("warning: posix_fadvise(.., POSIX_FADV_SEQUENTIAL) failed: %s\n",
-                    strerror(errno));
-        }
-        if (prefetch) { flags |= MAP_POPULATE; }
-#endif
+
         addr = mmap(NULL, file->size, PROT_READ, flags, fd, 0);
         if (addr == MAP_FAILED) { // NOLINT
             throw std::runtime_error(format("mmap failed: %s", strerror(errno)));
         }
-
+#else
+        addr = ggml_aligned_malloc(file->size);
+        if(!addr){ 
+            throw std::runtime_error(format("malloc failed: %s", strerror(errno)));
+        }
+        fseek(file->fp, 0, SEEK_SET);
+        size_t read = fread(addr, 1, file->size, file->fp);
+        if (read != file->size) {
+            ggml_aligned_free(addr, size);
+            throw std::runtime_error(format("fread failed: expected %zu bytes, got %zu bytes", file->size, read));
+        }
+#endif
+#ifndef BARE_METAL_TEST
         if (prefetch > 0) {
             // advise the kernel to preload the mapped memory
             if (posix_madvise(addr, std::min(file->size, prefetch), POSIX_MADV_WILLNEED)) {
@@ -2031,6 +2043,7 @@ struct llama_mmap {
 
         // initialize list of mapped_fragments
         mapped_fragments.emplace_back(0, file->size);
+#endif
     }
 
     static void align_range(size_t * first, size_t * last, size_t page_size) {
@@ -2049,6 +2062,7 @@ struct llama_mmap {
 
     // partially unmap the file in the range [first, last)
     void unmap_fragment(size_t first, size_t last) {
+#ifndef BARE_METAL_TEST
         // note: this function must not be called multiple times with overlapping ranges
         // otherwise, there is a risk of invalidating addresses that have been repurposed for other mappings
         int page_size = sysconf(_SC_PAGESIZE);
@@ -2091,14 +2105,20 @@ struct llama_mmap {
             }
         }
         mapped_fragments = std::move(new_mapped_fragments);
+#endif
     }
 
     ~llama_mmap() {
+#ifndef BARE_METAL_TEST
         for (const auto & frag : mapped_fragments) {
             if (munmap((char *) addr + frag.first, frag.second - frag.first)) {
                 LLAMA_LOG_WARN("warning: munmap failed: %s\n", strerror(errno));
             }
         }
+#else
+        if(addr)
+            ggml_aligned_free(addr, size);
+#endif
     }
 #elif defined(_WIN32)
     static constexpr bool SUPPORTED = true;
@@ -2221,6 +2241,7 @@ struct llama_mlock {
         }
     }
 
+#ifndef BARE_METAL_TEST
 #ifdef _POSIX_MEMLOCK_RANGE
     static constexpr bool SUPPORTED = true;
 
@@ -2316,6 +2337,20 @@ struct llama_mlock {
                     llama_format_win_err(GetLastError()).c_str());
         }
     }
+#else
+    static constexpr bool SUPPORTED = false;
+
+    static size_t lock_granularity() {
+        return (size_t) 65536;
+    }
+
+    bool raw_lock(const void * addr, size_t len) const {
+        LLAMA_LOG_WARN("warning: mlock not supported on this system\n");
+        return false;
+    }
+
+    static void raw_unlock(const void * addr, size_t len) {}
+#endif
 #else
     static constexpr bool SUPPORTED = false;
 
@@ -5014,6 +5049,7 @@ struct llama_model_loader {
         std::vector<void *> host_ptrs;
         size_t buffer_idx = 0; // buffer to use for async loads
         ggml_backend_t upload_backend = [&](const char * func) -> ggml_backend_t {
+#ifndef BARE_METAL_TEST
             if (use_mmap || check_tensors) {
                 return nullptr;
             }
@@ -5084,14 +5120,19 @@ struct llama_model_loader {
             }
 
             return backend;
+#else
+		return nullptr;
+#endif
         }(__func__);
 
+#ifndef BARE_METAL_TEST
         if (upload_backend) {
             LLAMA_LOG_DEBUG("%s: using async uploads for device %s, buffer type %s, backend %s\n", __func__,
                 ggml_backend_dev_name(ggml_backend_get_device(upload_backend)),
                 ggml_backend_buft_name(ggml_backend_buffer_get_type(bufs.at(0))),
                 ggml_backend_name(upload_backend));
         }
+#endif
 
         for (struct ggml_tensor * cur = ggml_get_first_tensor(ctx); cur != NULL; cur = ggml_get_next_tensor(ctx, cur)) {
             const auto * weight = get_weight(ggml_get_name(cur));
@@ -5117,9 +5158,11 @@ struct llama_model_loader {
                 uint8_t * data = (uint8_t *) mapping->addr + weight->offs;
 
                 if (check_tensors) {
+#ifndef BARE_METAL_TEST
                     validation_result.emplace_back(std::async(std::launch::async, [cur, data, n_size] {
                         return std::make_pair(cur, ggml_validate_row_data(cur->type, data, n_size));
                     }));
+#endif
                 }
 
                 GGML_ASSERT(buf_mmap || cur->data); // either we have a buffer to allocate the tensor in, or it is already allocated
@@ -5133,53 +5176,13 @@ struct llama_model_loader {
                     auto & mmap_used = mmaps_used[weight->idx];
                     mmap_used.first  = std::min(mmap_used.first,  weight->offs);
                     mmap_used.second = std::max(mmap_used.second, weight->offs + n_size);
-                } else {
-                    ggml_backend_tensor_set(cur, data, 0, n_size);
-                }
-            } else {
-                const auto & file = files.at(weight->idx);
-                if (ggml_backend_buffer_is_host(cur->buffer)) {
-                    file->seek(weight->offs, SEEK_SET);
-                    file->read_raw(cur->data, n_size);
-                    if (check_tensors) {
-                        validation_result.emplace_back(std::async(std::launch::async, [cur, n_size] {
-                            return std::make_pair(cur, ggml_validate_row_data(cur->type, cur->data, n_size));
-                        }));
-                    }
-                } else {
-                    // If upload_backend is valid load the tensor in chunks to pinned memory and upload the buffers asynchronously to the GPU.
-                    if (upload_backend) {
-                        file->seek(weight->offs, SEEK_SET);
-
-                        size_t bytes_read = 0;
-
-                        while (bytes_read < n_size) {
-                            size_t read_iteration = std::min<size_t>(buffer_size, n_size - bytes_read);
-
-                            ggml_backend_event_synchronize(events[buffer_idx]);
-                            file->read_raw(host_ptrs[buffer_idx], read_iteration);
-                            ggml_backend_tensor_set_async(upload_backend, cur, host_ptrs[buffer_idx], bytes_read, read_iteration);
-                            ggml_backend_event_record(events[buffer_idx], upload_backend);
-
-                            bytes_read += read_iteration;
-                            ++buffer_idx;
-                            buffer_idx %= n_buffers;
-                        }
-                    } else {
-                        read_buf.resize(n_size);
-                        file->seek(weight->offs, SEEK_SET);
-                        file->read_raw(read_buf.data(), n_size);
-                        ggml_backend_tensor_set(cur, read_buf.data(), 0, n_size);
-                        if (check_tensors && !ggml_validate_row_data(cur->type, read_buf.data(), n_size)) {
-                            throw std::runtime_error(format("tensor '%s' has invalid data", ggml_get_name(cur)));
-                        }
-                    }
                 }
             }
 
             size_done += n_size;
         }
 
+#ifndef BARE_METAL_TEST
         // free temporary resources used for async uploads
         for (auto * event : events) {
             ggml_backend_event_synchronize(event);
@@ -5188,8 +5191,10 @@ struct llama_model_loader {
         for (auto * buf : host_buffers) {
             ggml_backend_buffer_free(buf);
         }
+#endif
         ggml_backend_free(upload_backend);
 
+#ifndef BARE_METAL_TEST
         // check validation results
         bool validation_failed = false;
         for (auto & future : validation_result) {
@@ -5202,6 +5207,7 @@ struct llama_model_loader {
         if (validation_failed) {
             throw std::runtime_error("found tensors with invalid data");
         }
+#endif
 
         // check if this is the last call and do final cleanup
         if (size_done >= size_data) {
@@ -18198,6 +18204,7 @@ static void llama_kv_cache_update_internal(struct llama_context & lctx) {
     }
 }
 
+#ifndef BARE_METAL_TEST
 //
 // quantization
 //
@@ -19071,6 +19078,7 @@ static void llama_model_quantize_internal(const std::string & fname_inp, const s
                 __func__, qs.n_fallback, qs.n_k_quantized + qs.n_fallback);
     }
 }
+#endif
 
 static void llama_lora_adapter_init_internal(struct llama_model * model, const char * path_lora, struct llama_lora_adapter & adapter) {
     LLAMA_LOG_INFO("%s: loading lora adapter from '%s' ...\n", __func__, path_lora);
@@ -20118,7 +20126,9 @@ uint32_t llama_model_quantize(
         const char * fname_out,
         const llama_model_quantize_params * params) {
     try {
+#ifndef BARE_METAL_TEST
         llama_model_quantize_internal(fname_inp, fname_out, params);
+#endif
         return 0;
     } catch (const std::exception & err) {
         LLAMA_LOG_ERROR("%s: failed to quantize: %s\n", __func__, err.what());
@@ -21577,7 +21587,7 @@ float * llama_get_embeddings_ith(struct llama_context * ctx, int32_t i) {
                 throw std::runtime_error(format("negative index out of range [0, %d)", ctx->n_outputs));
             }
         } else if ((size_t) i >= ctx->output_ids.size()) {
-            throw std::runtime_error(format("out of range [0, %lu)", ctx->output_ids.size()));
+            throw std::runtime_error(format("out of range [0, %u)", (unsigned int)ctx->output_ids.size()));
         } else {
             j = ctx->output_ids[i];
         }
