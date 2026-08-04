@@ -33,10 +33,6 @@
 #endif
 #define TOKENS_DECODE 16
 
-#if defined(HIFI5S_OPT)
-struct  tms full_timestart[TOKENS_DECODE], full_timestop[TOKENS_DECODE];
-#endif
-
 static void print_usage(int, char ** argv) {
     printf("\nexample usage:\n");
     printf("\n    %s -m model.gguf [-n n_predict] [-ngl n_gpu_layers] [prompt]\n", argv[0]);
@@ -59,6 +55,10 @@ int main(int argc, char ** argv) {
     std::string prompt;
     bool prompt_set = false;
     // number of layers to offload to the GPU
+
+#if defined(HIFI5S_OPT)
+struct  tms *full_timestart, *full_timestop;
+#endif
 
 #ifndef BARE_METAL_TEST
     int ngl = 99;
@@ -124,6 +124,11 @@ int main(int argc, char ** argv) {
         }
     }
 
+#if defined(HIFI5S_OPT)
+    full_timestart = (struct tms *)malloc(sizeof(struct tms) * n_predict);
+    full_timestop  = (struct tms *)malloc(sizeof(struct tms) * n_predict);
+#endif
+
     // load dynamic backends
 
     ggml_backend_load_all();
@@ -157,7 +162,7 @@ int main(int argc, char ** argv) {
 			if (has_tmpl < 0) {
 				prompt = "Once upon a time";                   // base model default
 			} else {
-				prompt = "What is the capital of France?";     // chat model default
+				prompt = "Who painted the Mona Lisa?";         // chat model default
 			}
 			fprintf(stderr, "info: no prompt — using default for %s model: \"%s\"\n",
 					has_tmpl < 0 ? "base" : "chat", prompt.c_str());
@@ -310,40 +315,98 @@ int main(int argc, char ** argv) {
     llama_perf_context_print(ctx);
     fprintf(stderr, "\n");
 #else
-    unsigned long long avg_cycles, max_cycles=0, total_cycles=0;
-    unsigned int max_frame=0;
+    unsigned long long avg_cycles = 0, max_cycles = 0, total_cycles = 0;
+    unsigned int max_frame = 0;
     unsigned long full_cycles;   // unsigned long avoids signed 32-bit clock_t overflow
     unsigned int cnt;
-    for(cnt=1; cnt<n_decode; cnt++)
+
+    for (cnt = 1; cnt < n_decode; cnt++)
     {
-        full_cycles = (unsigned long)full_timestop[cnt].tms_utime - (unsigned long)full_timestart[cnt].tms_utime;
-        if(max_cycles < full_cycles)
-        { max_cycles = full_cycles; max_frame = cnt; }
+        full_cycles = (unsigned long)full_timestop[cnt].tms_utime -
+                      (unsigned long)full_timestart[cnt].tms_utime;
+
+        if (max_cycles < full_cycles)
+        {
+            max_cycles = full_cycles;
+            max_frame = cnt;
+        }
 
         total_cycles += (unsigned long long)full_cycles;
     }
+
     // Guard against divide-by-zero when only 1 or fewer tokens were decoded
-    avg_cycles = (n_decode > 1) ? total_cycles/(n_decode-1) : 0;
+    avg_cycles = (n_decode > 1) ? total_cycles / (n_decode - 1) : 0;
 
     fprintf(stdout, "\n%s: decoded %d tokens\n", __func__, n_decode);
     printf("\n");
-    long long int prefill_cycles = (long long int) ((unsigned long)full_timestop[0].tms_utime - (unsigned long)full_timestart[0].tms_utime);
+
+    long long int prefill_cycles =
+        (long long int)((unsigned long)full_timestop[0].tms_utime -
+                        (unsigned long)full_timestart[0].tms_utime);
+
+    long long int prefill_cycles_per_token =
+        (n_prompt > 0) ? (prefill_cycles / n_prompt) : 0;
+
+    float ttft_sec =
+        (float)prefill_cycles / (float)(1e9);
+
+    float decode_tokens_per_sec =
+        (avg_cycles > 0) ? ((float)(1e9) / (float)avg_cycles) : 0.0f;
+
+    const int label_width = 48;
+
     printf("============================================================\n");
     printf("                DETAILED CYCLES REPORT\n");
     printf("============================================================\n");
-    fprintf(stdout, "cycles to first output token                   : %10lld\n", prefill_cycles);
-    fprintf(stdout, "(aka prefill cycles: includes prompt processing for %d prompt tokens)\n", n_prompt);
-    fprintf(stdout, "cycles to decode subsequent %d output tokens   : %10llu\n", n_decode-1, total_cycles);
-    fprintf(stdout, "prefill cycles/token                           : %10lld\n", prefill_cycles/n_prompt);
-    fprintf(stdout, "avg decode cycles/token                        : %10llu\n", avg_cycles);
+
+    fprintf(stdout,
+            "%-*s : %14lld (aka prefill cycles: includes prompt processing for %d prompt tokens)\n",
+            label_width,
+            "cycles to first output token",
+            prefill_cycles,
+            n_prompt);
+
+    {
+        char label[128];
+        snprintf(label, sizeof(label),
+                 "cycles to decode subsequent %d output tokens",
+                 n_decode - 1);
+
+        fprintf(stdout,
+                "%-*s : %14llu\n",
+                label_width,
+                label,
+                total_cycles);
+    }
+
+    fprintf(stdout,
+            "%-*s : %14lld\n",
+            label_width,
+            "prefill cycles/token",
+            prefill_cycles_per_token);
+
+    fprintf(stdout,
+            "%-*s : %14llu\n",
+            label_width,
+            "avg decode cycles/token",
+            avg_cycles);
 
     printf("\n");
     printf("============================================================\n");
     printf("                PERFORMANCE SUMMARY\n");
     printf("============================================================\n");
-    fprintf(stdout, "TTFT @1 GHz DSP                : %.4f sec (for decoding %d prompt tokens)\n", (float)(prefill_cycles)/(float)(1e9), n_prompt);
-    fprintf(stdout, "(TTFT => Time To First Token)\n");
-    fprintf(stdout, "decode tokens/sec @ 1GHz DSP   : %.2f\n", (float)(1e9)/(float)avg_cycles);
+
+    fprintf(stdout,
+            "%-*s : %10.4f sec\n",
+            label_width,
+            "TTFT @ 1 GHz DSP",
+            ttft_sec);
+
+    fprintf(stdout,
+            "%-*s : %10.2f\n",
+            label_width,
+            "Decode tokens/sec @ 1 GHz DSP",
+            decode_tokens_per_sec);
 
     fprintf(stdout, "\n%d threads used\n", GGML_DEFAULT_N_THREADS);
 #endif
@@ -352,6 +415,11 @@ int main(int argc, char ** argv) {
     llama_sampler_free(smpl);
     llama_free(ctx);
     llama_free_model(model);
+#endif
+
+#if defined(HIFI5S_OPT)
+    free(full_timestart);
+    free(full_timestop);
 #endif
 
 #ifdef BARE_METAL_TEST
